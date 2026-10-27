@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hpc-autooptimizer"
+version = "0.1.0"
+description = "Research foundation for LLM-guided code optimization"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+hpc-autooptimizer = "hpc_autooptimizer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
