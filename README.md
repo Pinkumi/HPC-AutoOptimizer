@@ -30,6 +30,7 @@ flowchart LR
 | `agent.py` | Prompt construction and single optimization proposal workflow |
 | `llm_benchmark.py` | Sequential inference-only measurements and statistics |
 | `history.py` | Per-experiment JSON records and candidate artifacts |
+| `reporting.py` | Markdown experiment summaries and compact optimization CLI output |
 | `evaluation.py`, `benchmark.py` | Disabled isolated-evaluation contract and ParallelBench command planning |
 | `cli.py` | Command-line entry points |
 
@@ -124,6 +125,8 @@ Code and summary must be nonempty strings. Other fields are arrays of nonempty s
 
 Phase 1's positional-source CLI and five-field response schema remain readable; legacy responses normalize into the new schema. Direct agent calls without a source filename retain the `proposed_source.txt` artifact name.
 
+Optimization commands print a compact report with the experiment ID, model, output path, inference time, token rate, and validation status. Add `--json` to retain the previous machine-readable JSON output. Missing inference metrics display as `Not available`.
+
 ## Inference benchmarks
 
 With the remote .env configured, run these commands sequentially:
@@ -147,11 +150,14 @@ experiments/
     record.json       # version 2 metadata, prompt, raw response, metrics, status/errors
     proposal.json     # normalized validated proposal
     optimized.py      # complete untrusted candidate; never automatically run
+    summary.md        # readable proposal, inference metrics, and validation status
   <llm-benchmark-uuid>/
     record.json       # settings, prompt, individual runs, warm-up, statistics
 ```
 
 Optimization metadata includes UTC timestamp, source path/hash, generated path/hash, provider/model, objective, target/function/constraints, proposed changes, risks, assumptions, input/output token counts, internal and client timings, and separate schema/syntax/correctness/benchmark status. The agent's overall generation duration also includes model-discovery time; provider client timing isolates the generation request and any disclosed thinking fallback. Failed attempts retain errors and available raw responses without publishing a candidate file. Configuration/input errors happen before an experiment begins. Benchmark failures preserve partial results and excluded failed samples.
+
+New records omit Ollama's `context` continuation-token array because it is unused by this workflow and obscures useful research metadata. Response text, model/settings, completion/error details, and all calculated metrics remain available. Each new optimization attempt also produces `summary.md`, including failures. It labels model suggestions and expected benefits as unverified, and marks correctness and performance as `Not evaluated`; Python syntax checks alone establish neither behavioral equivalence nor a speedup. Summaries reference the output file rather than embedding generated code or raw responses. Existing experiments are never rewritten or given summaries automatically.
 
 Records are staged and published by directory rename with UUID collision rejection. Existing records are never migrated. This is a local filesystem store, not a database with distributed transactions or crash recovery. Storage failures can prevent logging. Full prompts and raw responses may contain source and reasoning; protect the experiments directory. The prompt retains the input source for reproducibility; proposal JSON is retained for structured inspection alongside the separate source artifact.
 

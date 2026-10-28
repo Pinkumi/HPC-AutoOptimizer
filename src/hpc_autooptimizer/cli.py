@@ -9,6 +9,7 @@ from .history import ExperimentHistory
 from .llm_benchmark import run_llm_benchmark
 from .models import validate_python
 from .providers import MockLLMProvider, OllamaLLMProvider, ProviderError
+from .reporting import format_cli_summary
 
 
 def _settings_arguments(parser: argparse.ArgumentParser) -> None:
@@ -28,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     optimize.add_argument("--target", choices=("cpu", "gpu", "general"), default="cpu")
     optimize.add_argument("--function", "--target-function", dest="target_function")
     optimize.add_argument("--constraint", action="append", default=[])
+    optimize.add_argument("--json", action="store_true", help="Print the previous machine-readable JSON result")
     _settings_arguments(optimize)
     benchmark = commands.add_parser("llm-benchmark", help="Measure sequential LLM inference, not program speed")
     benchmark.add_argument("--runs", type=int, default=5)
@@ -58,12 +60,16 @@ def main(argv: list[str] | None = None) -> int:
             result = OptimizationAgent(provider, history).optimize(
                 source, args.objective, target=args.target, target_function=args.target_function,
                 constraints=args.constraint, source_file=args.source)
-            print(json.dumps({"experiment_id": result.experiment_id, "artifact_dir": str(result.artifact_dir),
-                              "generated_source_path": str(result.artifact_dir / "optimized.py"),
-                              "model": config.model, "summary": result.proposal.summary,
-                              "validation_status": "schema_valid", "syntax_status": "syntax_valid",
-                              "correctness_status": "not_run", "benchmark_status": "not_run",
-                              "notice": "Proposal only; performance benefits are unverified."}))
+            if args.json:
+                print(json.dumps({"experiment_id": result.experiment_id, "artifact_dir": str(result.artifact_dir),
+                                  "generated_source_path": str(result.artifact_dir / "optimized.py"),
+                                  "model": config.model, "summary": result.proposal.summary,
+                                  "validation_status": "schema_valid", "syntax_status": "syntax_valid",
+                                  "correctness_status": "not_run", "benchmark_status": "not_run",
+                                  "notice": "Proposal only; performance benefits are unverified."}))
+            else:
+                record = json.loads((result.artifact_dir / "record.json").read_text(encoding="utf-8"))
+                print(format_cli_summary(record))
         return 0
     except (ValueError, OSError, ProviderError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -370,9 +370,9 @@ class Phase2Tests(unittest.TestCase):
         with patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(main(["optimize", str(source), "--objective", "speed", "--target", "general",
                                    "--model", MODEL_NAMES[1], *shared]), 0)
-            result = json.loads(out.getvalue())
-            self.assertEqual(result["model"], MODEL_NAMES[1])
-            self.assertEqual(Path(result["generated_source_path"]).read_text(), source.read_text())
+            result = dict(line.split(": ", 1) for line in out.getvalue().splitlines() if ": " in line)
+            self.assertEqual(result["Model"], MODEL_NAMES[1])
+            self.assertEqual(Path(result["Output file"]).read_text(), source.read_text())
         with patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(main(["llm-benchmark", "--runs", "2", *shared]), 0)
             self.assertEqual(json.loads(out.getvalue())["status"], "completed")

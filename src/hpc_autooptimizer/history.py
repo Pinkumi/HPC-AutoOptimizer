@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 from typing import Any
+from .reporting import format_optimization_summary
 
 
 def _compact_metadata(value: Any) -> Any:
@@ -42,6 +43,9 @@ class ExperimentHistory:
                 (staging / "proposal.json").write_text(json.dumps(proposal, indent=2) + "\n", encoding="utf-8")
                 source = proposal["optimized_code"] if "optimized_code" in proposal else proposal["proposed_source_code"]
                 (staging / source_filename).write_text(source, encoding="utf-8")
+            if proposal is not None or metadata.get("experiment_type") == "optimization":
+                (staging / "summary.md").write_text(
+                    format_optimization_summary(metadata, proposal), encoding="utf-8")
             if destination.exists():
                 raise FileExistsError(f"Experiment already exists: {experiment_id}")
             staging.rename(destination)

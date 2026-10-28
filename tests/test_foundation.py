@@ -135,7 +135,7 @@ class FoundationTests(unittest.TestCase):
         config.write_text(f'history_dir = {json.dumps(str(self.history.root))}')
         with patch("sys.stdout", new_callable=io.StringIO) as output:
             self.assertEqual(main([str(source), "--objective", "speed", "--config", str(config)]), 0)
-            self.assertEqual(json.loads(output.getvalue())["benchmark_status"], "not_run")
+            self.assertIn("Performance benchmark: Not evaluated", output.getvalue())
         with patch("sys.stderr", new_callable=io.StringIO):
             self.assertEqual(main([str(self.root / "missing"), "--objective", "speed"]), 1)
 
