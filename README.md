@@ -1,95 +1,178 @@
 # HPC-AutoOptimizer
 
-HPC-AutoOptimizer is a research project investigating whether large language models can propose useful code optimizations when guided by correctness checks and real hardware feedback. Phase 1 establishes generation, schema validation, and experiment tracking. It does not measure speedups or execute generated programs.
+HPC-AutoOptimizer investigates LLM-guided optimization of computational Python programs using future correctness checks and real hardware feedback. Phase 2 adds remote Ollama inference, structured Python proposals, inference metrics, and reproducible model benchmarks. Proposals are hypotheses: this project does not yet establish behavioral equivalence or measure generated-program performance.
 
 ## Architecture
 
-The Python 3.11+ package uses a `src/` layout and has no runtime dependencies beyond the standard library.
+Python 3.11+; no runtime dependencies beyond the standard library.
+
+```mermaid
+flowchart LR
+    C[CLI: optimize / llm-benchmark] --> S[TOML + .env + environment]
+    C --> A[Optimization agent / inference benchmark]
+    A --> P[Mock or Ollama provider]
+    P --> O[Private HTTPS Ollama server]
+    P --> V[JSON schema + Python syntax checks]
+    A --> H[JSON experiment history]
+    V --> H
+    H -. Phase 3 .-> E[Isolated correctness runner]
+    E -. Future integration .-> B[ParallelBench]
+```
 
 | Module | Responsibility |
 | --- | --- |
-| `providers/base.py` | Abstract LLM interface, structured generation result, typed provider errors |
+| `providers/base.py` | Provider abstraction, structured response, typed errors |
 | `providers/mock.py` | Deterministic offline baseline and injectable response fixtures |
-| `providers/ollama.py` | Configurable HTTP(S) inference with socket timeouts |
-| `models.py` | Proposal schema and strict JSON validation |
-| `config.py` | Validated TOML experiment settings |
-| `agent.py` | Objective and source prompt construction, proposal generation, attempt recording |
-| `history.py` | JSON records and candidate artifacts stored per experiment |
-| `evaluation.py` | Future isolated correctness evaluation contract |
-| `benchmark.py` | ParallelBench command planning; candidate execution disabled |
-| `cli.py` | Command-line entry point |
+| `providers/ollama.py` | Model discovery, configurable requests, reasoning separation, timeouts |
+| `config.py` | Validated TOML, .env, environment configuration |
+| `models.py` | Strict proposal validation and Python AST parsing |
+| `metrics.py` | Ollama timing and token-rate calculations |
+| `agent.py` | Prompt construction and single optimization proposal workflow |
+| `llm_benchmark.py` | Sequential inference-only measurements and statistics |
+| `history.py` | Per-experiment JSON records and candidate artifacts |
+| `evaluation.py`, `benchmark.py` | Disabled isolated-evaluation contract and ParallelBench command planning |
+| `cli.py` | Command-line entry points |
 
-The agent sends the objective and source as JSON prompt data, requests a proposal, validates it, and stores it. The source language is unrestricted at this stage: no compilation or language-specific correctness claim is made. The mock provider preserves the supplied source unchanged; it tests the workflow rather than simulating an improvement.
-
-## Installation and offline usage
+## Installation and offline smoke test
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
-hpc-autooptimizer examples/sum_squares.py --objective "Reduce allocation overhead while preserving behavior" --config examples/mock.toml
+hpc-autooptimizer optimize examples/matrix_multiplication.py \
+  --provider mock --target cpu --objective speed
 ```
 
-Alternatively, run without installation:
+The mock provider preserves source unchanged and invents no measurements. Without configuration, the default provider is mock. No Ollama, Tailscale, CUDA, or model download is needed for offline use or unit tests.
+
+Without installation, use `PYTHONPATH=src python3 -m hpc_autooptimizer` in place of `hpc-autooptimizer`. Setuptools is required for package installation only.
+
+## Local and remote Ollama
+
+The intended client is the Ubuntu laptop (Ryzen 7 5800H / GTX 1650). Inference can run locally or on the Windows desktop (Ryzen 5 5500 / RTX 3060 Ti, 8 GB). The client only needs Python and network access; Ollama need not be installed on the laptop when using remote inference.
+
+Primary model: `qwen3.5:9b-q4_K_M`. Secondary model: `qwen2.5-coder:7b`. Both use the same provider; model names never appear in optimization logic. Models must already be installed on the inference server. The client checks `/api/tags` and gives an installation hint if the requested name is absent. It never downloads models or installs packages suggested by a model.
+
+For a local service, use `examples/ollama.toml`, which points to `http://127.0.0.1:11434`. For the remote service:
 
 ```bash
-PYTHONPATH=src python3 -m hpc_autooptimizer examples/sum_squares.py --objective "Reduce allocation overhead"
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+cp .env.example .env
+# Edit HPC_OLLAMA_BASE_URL to your private Tailscale Serve HTTPS URL.
+hpc-autooptimizer optimize examples/matrix_multiplication.py \
+  --model qwen3.5:9b-q4_K_M --target cpu --objective speed
 ```
 
-Tests use temporary directories and mocked HTTP transport. They require neither Ollama nor CUDA. Setuptools is needed only to build/install the package; no test framework is required.
+The example URL is a placeholder. `.env` and private `.env.*` files are excluded from Git. Keep actual host addresses in private configuration. Tailscale access, HTTPS termination, and Ollama service management remain external to this package. Do not expose Ollama publicly.
 
-## Local Ollama inference
+This deployment's Tailscale Serve route requires `Host: localhost:11434`; configure `HPC_OLLAMA_HOST_HEADER=localhost:11434`. That header applies to model discovery, generation, and model unloading. Leave it empty for direct local inference. It changes HTTP routing only: HTTPS certificate verification and the URL hostname used for TLS remain intact. No insecure SSL context is used. A 403 error points to the Host-header and private-network settings.
 
-Install Ollama separately, start its service, and download a model suitable for your available memory. The example model is illustrative; a 7B model may exceed a 4 GB GPU's capacity and require CPU offload. This project does not install models, choose quantization, manage GPU placement, or require a GPU.
+Generation uses the [Ollama generate API](https://docs.ollama.com/api/generate) with a JSON schema and non-streaming output. Reasoning returned in `thinking` is retained in the raw metadata, separately from the final `response` used for code. With `think=false`, an explicit unsupported-thinking HTTP 400 triggers one retry omitting that field; the fallback and effective settings are recorded. Unsupported `think=true` fails with a configuration hint. See Ollama's [thinking controls](https://docs.ollama.com/capabilities/thinking).
 
-Edit `examples/ollama.toml` to select an installed model, then run:
+## Configuration
+
+Precedence, lowest to highest: defaults, TOML, .env file, process environment, CLI overrides. The CLI loads `.env` from the working directory if present; `--env-file PATH` selects another file. The library's `ExperimentConfig.load()` only reads an environment file when explicitly passed one. `--config PATH` selects TOML. Relative paths resolve against the working directory.
+
+| Environment variable | TOML key | Default |
+| --- | --- | --- |
+| `HPC_LLM_PROVIDER` | `provider` | `mock` |
+| `HPC_OLLAMA_BASE_URL` | `base_url` | `http://127.0.0.1:11434` |
+| `HPC_OLLAMA_MODEL` | `model` | `mock-v1`; explicitly select a model for Ollama |
+| `HPC_OLLAMA_HOST_HEADER` | `host_header` | Unset |
+| `HPC_OLLAMA_TIMEOUT` | `timeout_seconds` | `180` |
+| `HPC_OLLAMA_KEEP_ALIVE` | `keep_alive` | `15m` |
+| `HPC_OLLAMA_NUM_CTX` | `num_ctx` | `4096` |
+| `HPC_OLLAMA_NUM_PREDICT` | `num_predict` | `2048` |
+| `HPC_OLLAMA_TEMPERATURE` | `temperature` | `0.2` |
+| `HPC_OLLAMA_THINK` | `think` | `false` |
+| `HPC_HISTORY_DIR` | `history_dir` | `experiments` |
+
+Environment `think` accepts `true`, `false`, or `null` (omit the request parameter and use the model default). TOML supports booleans; omit the key for the default `false`. Context and output-token limits must be positive integers; timeout must be positive and temperature nonnegative, both finite. Keep-alive accepts `0` or duration strings such as `30s`, `15m`, or `1h`. URLs must use HTTP(S) without embedded credentials; header values reject whitespace and control characters.
+
+The .env reader accepts one supported `KEY=value` per line, whole-line comments, and optional surrounding single or double quotes. It does not run shell commands, expand variables, support `export`, or interpret inline comments. Unknown .env/TOML keys fail clearly; unrelated process environment variables are ignored.
+
+Keep the 4096-token context on the 8 GB server unless deliberately changing it. Context is never increased automatically. `num_predict` caps generated output; a limit-truncated response fails rather than saving a partial candidate. Timeout is a socket-operation timeout, not an absolute wall-clock deadline. There are no automatic transport retries.
+
+## Optimization usage
 
 ```bash
-hpc-autooptimizer examples/sum_squares.py --objective "Reduce Python loop overhead, preserving numeric semantics" --config examples/ollama.toml
+hpc-autooptimizer optimize examples/matrix_multiplication.py \
+  --model qwen3.5:9b-q4_K_M --target cpu --objective speed \
+  --function matrix_multiplication \
+  --constraint "Preserve the function signature" \
+  --constraint "Do not add dependencies"
+
+hpc-autooptimizer optimize examples/matrix_multiplication.py \
+  --model qwen2.5-coder:7b --target cpu --objective speed
 ```
 
-The default local service URL is `http://127.0.0.1:11434`. The provider uses Ollama's [generate API](https://docs.ollama.com/api/generate), requesting non-streaming output with a JSON schema and temperature zero. Model output is still independently validated; temperature zero does not guarantee deterministic real-model inference. HTTP, connection, protocol, and timeout failures have explicit exceptions.
+Use `--provider ollama` or set it in configuration for real inference; `--model` alone does not change providers. Targets are `cpu`, `gpu`, and `general`; CPU numerical computing is the current focus. `--function` (alias `--target-function`) selects an existing function to focus on; the proposal still contains the complete file. Repeat `--constraint` for additional requirements. Prompts cover bottlenecks, complexity, allocations, optional NumPy/Numba use, numerical precision, assumptions, and risks. These are instructions to the model, not enforced semantic constraints.
 
-## Remote inference
+Input existence and Python syntax are checked before inference. Output must contain exactly:
 
-Copy the configuration to a private, untracked file and replace `base_url` with the HTTPS URL of your inference service, for example `https://inference.example.test`. The same client can reach a Windows-hosted Ollama service through a configured private network such as Tailscale. Routing, HTTPS termination, access control, and server setup are managed separately. HTTPS uses the operating system trust store; certificate verification is not disabled.
+```json
+{
+  "optimized_code": "def square(x):\n    return x * x\n",
+  "summary": "Preserve the numerical baseline",
+  "changes": [],
+  "expected_benefits": ["Unverified hypothesis"],
+  "risks": ["Behavioral equivalence has not been tested"],
+  "assumptions": ["Numeric inputs"]
+}
+```
 
-No host addresses or credentials are embedded in the implementation. URL credentials are rejected, and this phase has no credential/header authentication support. Prompts contain the entire input source: choose a trusted inference endpoint. The timeout is a socket-operation timeout, not a strict total-generation deadline; there are no automatic retries. For remote inference, increase `timeout_seconds` as needed. TOML-relative `history_dir` paths resolve against the process working directory.
+Code and summary must be nonempty strings. Other fields are arrays of nonempty strings, which may be empty. Duplicate keys, extra fields, malformed JSON, Markdown fences, invalid Python syntax, incomplete envelopes, and output-limit stop reasons are rejected. The provider reads complete responses without silently truncating source. Successful source is saved as a separate `optimized.py` inside the experiment directory; original files are never replaced. Candidates are parsed with `ast.parse()`, never imported or executed.
 
-Configuration keys are `provider` (`mock` or `ollama`), `model`, `base_url`, `timeout_seconds`, and `history_dir`. Unknown keys and invalid values fail clearly. Omitting `--config` selects the offline mock defaults. The CLI exits with status 1 for configuration, input, provider, response-validation, or storage failures.
+Phase 1's positional-source CLI and five-field response schema remain readable; legacy responses normalize into the new schema. Direct agent calls without a source filename retain the `proposed_source.txt` artifact name.
 
-## Structured proposals and history
+## Inference benchmarks
 
-Every proposal must contain exactly these fields:
+With the remote .env configured, run these commands sequentially:
 
-- `proposed_source_code`: nonempty string
-- `optimization_description`: nonempty string
-- `expected_performance_impact`: nonempty string describing a hypothesis
-- `assumptions`: array of nonempty strings (may be empty)
-- `potential_risks`: array of nonempty strings (may be empty)
+```bash
+hpc-autooptimizer llm-benchmark --model qwen3.5:9b-q4_K_M --runs 5 --warmup
+hpc-autooptimizer llm-benchmark --model qwen2.5-coder:7b --runs 5 --warmup
+```
 
-Markdown fences, duplicate keys, extra fields, invalid types, and missing fields are rejected. Schema validity establishes only the shape of the response.
+The command checks server availability and installed models, optionally makes one warm-up request, then sends the same numerical-computing prompt for every measured request. It saves prompt text/hash, inference settings, model metadata, individual raw responses, internal timings, and client-observed durations. Warm-up is stored separately and excluded from statistics. Structured generation and syntax validation match the optimization path.
 
-Each attempt uses a UUID directory under `history_dir`. `record.json` contains the UTC timestamp, selected model, objective, SHA-256 hashes of UTF-8 source strings, description, generation duration in seconds, schema validation status, correctness status, and benchmark status. Successful proposals also produce `proposal.json` and `proposed_source.txt`. Provider failures and invalid responses are logged with null generated-code fields and an error message; CLI input/configuration errors occur before an attempt begins. Generation duration includes transport and parsing, not hardware execution.
+It reports mean, median, minimum, maximum, and population standard deviation for client duration and available timing/token metrics. Output tokens/second is `eval_count / (eval_duration / 1e9)`; prompt tokens/second uses prompt counts and duration. Internal nanosecond values and converted seconds are both preserved. Missing or invalid metrics become null; zero duration produces no token-rate estimate. Mock benchmarks report client duration but leave inference token rates null.
 
-Records are staged in the history directory and published by directory rename. Existing experiment IDs are rejected; there is no mutable shared index. This is a local filesystem store, not a database with crash recovery or distributed transaction guarantees. Disk failures can prevent recording. Artifacts can contain sensitive source and are ignored by Git by default. Original source is hashed rather than retained; preserve the original input separately for reproducibility.
+One model is measured per invocation, requests run sequentially, and the selected model is explicitly unloaded afterward, including after request failure. Unload failures are recorded and printed. Avoid concurrent benchmark clients and ensure no other large model is resident on the 8 GB GPU; this client does not stop other workloads or impose server scheduling. Settings and prompts must match for a useful model comparison; review effective thinking settings and warm-up/cache effects as well. These measurements describe inference, not the performance of generated programs. No preliminary throughput number is a guaranteed result.
 
-## ParallelBench relationship
+## Experiment persistence
 
-[ParallelBench](https://github.com/Pinkumi/ParallelBench) supplies the independent benchmarking engine. Its current README describes built-in matrix multiplication experiments, a `parallelbench` CLI, and `results.json` artifacts. The Phase 1 adapter prepares argument lists for its built-in CPU baseline without launching them. No ParallelBench dependency is installed or repository modified.
+```text
+experiments/
+  <optimization-uuid>/
+    record.json       # version 2 metadata, prompt, raw response, metrics, status/errors
+    proposal.json     # normalized validated proposal
+    optimized.py      # complete untrusted candidate; never automatically run
+  <llm-benchmark-uuid>/
+    record.json       # settings, prompt, individual runs, warm-up, statistics
+```
 
-The inspected interface does not document an arbitrary generated-source input contract. Baseline timing therefore cannot be attributed to a generated candidate. See [the integration design](docs/parallelbench.md) for the planned boundary.
+Optimization metadata includes UTC timestamp, source path/hash, generated path/hash, provider/model, objective, target/function/constraints, proposed changes, risks, assumptions, input/output token counts, internal and client timings, and separate schema/syntax/correctness/benchmark status. The agent's overall generation duration also includes model-discovery time; provider client timing isolates the generation request and any disclosed thinking fallback. Failed attempts retain errors and available raw responses without publishing a candidate file. Configuration/input errors happen before an experiment begins. Benchmark failures preserve partial results and excluded failed samples.
 
-## Security and current limits
+Records are staged and published by directory rename with UUID collision rejection. Existing records are never migrated. This is a local filesystem store, not a database with distributed transactions or crash recovery. Storage failures can prevent logging. Full prompts and raw responses may contain source and reasoning; protect the experiments directory. The prompt retains the input source for reproducibility; proposal JSON is retained for structured inspection alongside the separate source artifact.
 
-Generated code is untrusted. This package never imports, compiles, or executes candidate programs and uses neither `eval()` nor `exec()`. Correctness and benchmark status remain `not_run`; expected performance text is a model hypothesis, never a measurement. Saving generated text does not make it safe to run manually.
+## ParallelBench and security limits
 
-The evaluation interface describes wall-clock, CPU, memory, process, output, network, and filesystem limits. It does not enforce them: evaluation methods fail explicitly. Before enabling execution, implement a separate isolated runner with read-only inputs, a restricted writable directory, no host secrets, disabled networking, enforced limits, process-tree termination, and independent correctness tests. A plain subprocess with a timeout is insufficient. Prompt instructions and JSON validation provide no execution sandbox or proof of semantic equivalence.
+[ParallelBench](https://github.com/Pinkumi/ParallelBench) remains the independent engine for future generated-program benchmarking. Its adapter only plans built-in baseline CLI commands; it neither installs nor modifies ParallelBench. See [the integration design](docs/parallelbench.md). Inference benchmarking does not duplicate its numerical benchmarking engine.
 
-## Roadmap
+Generated code remains untrusted. Schema and syntax checks establish neither safety nor equivalence. Correctness and program benchmark status remain `not_run`. There is no generated-code execution, CUDA compilation, iterative search, package installation, distributed execution, GUI, or automatic source replacement. Endpoint configuration contains no authentication-header support; use private network access and trusted inference services. Complete source is sent to the selected provider.
 
-1. Phase 1: provider abstraction, mock/Ollama inference, validated proposals, local history, CLI, and offline tests.
-2. Isolated evaluation: threat model, enforced execution policies, reference-based correctness tests, and auditable failure records.
-3. ParallelBench integration: agree on a versioned candidate contract, pin a compatible revision, and preserve genuine timing artifacts and hardware metadata.
-4. Feedback optimization: compare validated candidates against baselines under controlled conditions, then study iterative search, reproducibility, and model behavior across local and remote inference.
+Phase 3 requires an enforced isolated runner with resource limits, wall-clock/process-tree termination, restricted filesystems, disabled networking, no host secrets, and independent correctness cases before any program benchmarking. Existing evaluation interfaces describe these policies but do not enforce them; execution methods fail explicitly. A plain subprocess with a timeout is insufficient.
+
+## Development and roadmap
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
+Unit tests mock HTTP and require no external services. Live inference checks are manual and optional; remote unavailability does not affect the suite.
+
+1. Phase 1: provider abstraction, mock/Ollama inference, structured proposals, JSON history, CLI.
+2. Phase 2: private remote Qwen inference, environment settings, model switching, Python proposal checks, inference metrics and benchmarks.
+3. Phase 3: isolated correctness testing and measured program performance through a versioned ParallelBench boundary.
+4. Later research: hardware feedback, iterative search, reproducible cross-model studies.

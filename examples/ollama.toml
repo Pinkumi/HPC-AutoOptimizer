@@ -1,5 +1,12 @@
 provider = "ollama"
-model = "qwen2.5-coder:7b"
+model = "qwen3.5:9b-q4_K_M"
 base_url = "http://127.0.0.1:11434"
 timeout_seconds = 180.0
 history_dir = "experiments"
+keep_alive = "15m"
+num_ctx = 4096
+num_predict = 2048
+temperature = 0.2
+think = false
+# For a private HTTPS reverse proxy, set base_url and optionally:
+# host_header = "localhost:11434"
