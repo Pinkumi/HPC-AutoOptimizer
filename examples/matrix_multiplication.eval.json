@@ -1,0 +1,19 @@
+{
+  "function": "matrix_multiplication",
+  "comparison": {"mode": "numeric", "rtol": 1e-8, "atol": 1e-10, "equal_nan": false, "allow_int_float": false},
+  "correctness_cases": [
+    {"args": [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]},
+    {"args": [[[1, 0, 2], [0, 3, 4]], [[5, 6], [7, 8], [9, 10]]]},
+    {"args": [[[0, 2]], [[1, 2, 3], [4, 5, 6]]]},
+    {"args": [[[0.1, 0.2], [0.0, 0.3]], [[0.4, 0.5], [0.6, 0.7]]]}
+  ],
+  "benchmark": {
+    "cases": [{"args": [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]}],
+    "warmup": 3,
+    "repetitions": 10,
+    "improvement_threshold": 0.05,
+    "instability_threshold": 0.10
+  },
+  "limits": {"timeout_seconds": 5, "cpu_seconds": 3, "memory_bytes": 268435456, "process_limit": 1,
+             "output_bytes": 65536, "file_bytes": 1048576}
+}

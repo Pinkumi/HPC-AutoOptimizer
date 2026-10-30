@@ -1,6 +1,6 @@
 # HPC-AutoOptimizer
 
-HPC-AutoOptimizer investigates LLM-guided optimization of computational Python programs using future correctness checks and real hardware feedback. Phase 2 adds remote Ollama inference, structured Python proposals, inference metrics, and reproducible model benchmarks. Proposals are hypotheses: this project does not yet establish behavioral equivalence or measure generated-program performance.
+HPC-AutoOptimizer investigates LLM-guided optimization of computational Python programs using future correctness checks and real hardware feedback. Phase 2 adds remote Ollama inference, structured Python proposals, inference metrics, and reproducible model benchmarks. Proposals remain hypotheses until explicitly evaluated. Offline Phase 3 checking is now prepared; completion is pending real sandbox and end-to-end validation. See [local evaluation](docs/evaluation.md).
 
 ## Architecture
 
@@ -8,14 +8,15 @@ Python 3.11+; no runtime dependencies beyond the standard library.
 
 ```mermaid
 flowchart LR
-    C[CLI: optimize / llm-benchmark] --> S[TOML + .env + environment]
+    C[CLI: optimize / llm-benchmark / evaluate] --> S[TOML + .env + environment]
     C --> A[Optimization agent / inference benchmark]
     A --> P[Mock or Ollama provider]
     P --> O[Private HTTPS Ollama server]
     P --> V[JSON schema + Python syntax checks]
     A --> H[JSON experiment history]
     V --> H
-    H -. Phase 3 .-> E[Isolated correctness runner]
+    C --> E[Explicit local evaluator]
+    E --> H
     E -. Future integration .-> B[ParallelBench]
 ```
 
@@ -31,7 +32,9 @@ flowchart LR
 | `llm_benchmark.py` | Sequential inference-only measurements and statistics |
 | `history.py` | Per-experiment JSON records and candidate artifacts |
 | `reporting.py` | Markdown experiment summaries and compact optimization CLI output |
-| `evaluation.py`, `benchmark.py` | Disabled isolated-evaluation contract and ParallelBench command planning |
+| `evaluation_spec.py`, `comparison.py`, `correctness.py` | Explicit JSON contracts and typed returned-value checks |
+| `execution.py`, `_evaluation_worker.py` | Rootless namespace backend and explicit trusted-fixture subprocess mode |
+| `evaluation.py`, `benchmark.py` | Correctness-gated local CPU evaluation and ParallelBench command planning |
 | `cli.py` | Command-line entry points |
 
 ## Installation and offline smoke test
@@ -121,7 +124,7 @@ Input existence and Python syntax are checked before inference. Output must cont
 }
 ```
 
-Code and summary must be nonempty strings. Other fields are arrays of nonempty strings, which may be empty. Duplicate keys, extra fields, malformed JSON, Markdown fences, invalid Python syntax, incomplete envelopes, and output-limit stop reasons are rejected. The provider reads complete responses without silently truncating source. Successful source is saved as a separate `optimized.py` inside the experiment directory; original files are never replaced. Candidates are parsed with `ast.parse()`, never imported or executed.
+Code and summary must be nonempty strings. Other fields are arrays of nonempty strings, which may be empty. Duplicate keys, extra fields, malformed JSON, Markdown fences, invalid Python syntax, incomplete envelopes, and output-limit stop reasons are rejected. The provider reads complete responses without silently truncating source. Successful source is saved as a separate `optimized.py` inside the experiment directory; original files are never replaced. The optimization workflow parses candidates with `ast.parse()` and never imports or executes them. Execution requires a separate explicit `evaluate` command and an available isolation backend.
 
 Phase 1's positional-source CLI and five-field response schema remain readable; legacy responses normalize into the new schema. Direct agent calls without a source filename retain the `proposed_source.txt` artifact name.
 
@@ -165,9 +168,23 @@ Records are staged and published by directory rename with UUID collision rejecti
 
 [ParallelBench](https://github.com/Pinkumi/ParallelBench) remains the independent engine for future generated-program benchmarking. Its adapter only plans built-in baseline CLI commands; it neither installs nor modifies ParallelBench. See [the integration design](docs/parallelbench.md). Inference benchmarking does not duplicate its numerical benchmarking engine.
 
-Generated code remains untrusted. Schema and syntax checks establish neither safety nor equivalence. Correctness and program benchmark status remain `not_run`. There is no generated-code execution, CUDA compilation, iterative search, package installation, distributed execution, GUI, or automatic source replacement. Endpoint configuration contains no authentication-header support; use private network access and trusted inference services. Complete source is sent to the selected provider.
+Generated code remains untrusted. Schema and syntax checks establish neither safety nor equivalence. Generation records keep correctness and program benchmark status as `not_run`; explicit evaluation writes separate records. There is no automatic execution after generation, CUDA compilation, iterative search, package installation, distributed execution, GUI, or automatic source replacement. Endpoint configuration contains no authentication-header support; use private network access and trusted inference services. Complete source is sent to the selected provider.
 
-Phase 3 requires an enforced isolated runner with resource limits, wall-clock/process-tree termination, restricted filesystems, disabled networking, no host secrets, and independent correctness cases before any program benchmarking. Existing evaluation interfaces describe these policies but do not enforce them; execution methods fail explicitly. A plain subprocess with a timeout is insufficient.
+## Offline evaluation preparation
+
+`evaluate` loads a JSON contract, validates syntax and the target function, compares returned values on explicit cases, and times CPU workloads only if all cases pass. No Ollama request or GPU is involved. Rootless Bubblewrap is detected and probed; if namespaces are unavailable, untrusted execution fails closed with `isolation_unavailable`. No runtime is installed and no host-execution fallback occurs.
+
+For local verification with the handwritten fixtures only:
+
+```bash
+hpc-autooptimizer evaluate --original examples/matrix_multiplication.py \
+  --candidate tests/fixtures/evaluation/matmul_correct.py \
+  --spec examples/matrix_multiplication.eval.json --backend trusted --trusted-fixtures
+```
+
+The trusted fixture mode is explicitly **not a sandbox** and must never be used for generated code. The incorrect matrix fixture is rejected before any timing. Each evaluation produces a new `record.json` and `summary.md`, preserving source hashes, case diagnostics, actual timing samples, variability, and decision without rewriting Phase 2 experiments. Read [the contract, security boundaries, and pending verification](docs/evaluation.md) before evaluating candidates. A plain subprocess with timeouts is insufficient isolation.
+
+Phase 3 remains open: this environment denies namespace creation, and the remote LLM is currently unavailable. Offline fixture checks prepare the implementation; they do not validate real sandbox security or close the end-to-end phase.
 
 ## Development and roadmap
 
@@ -180,5 +197,5 @@ Unit tests mock HTTP and require no external services. Live inference checks are
 
 1. Phase 1: provider abstraction, mock/Ollama inference, structured proposals, JSON history, CLI.
 2. Phase 2: private remote Qwen inference, environment settings, model switching, Python proposal checks, inference metrics and benchmarks.
-3. Phase 3: isolated correctness testing and measured program performance through a versioned ParallelBench boundary.
+3. Phase 3 (in progress): explicit offline correctness contracts and local CPU evaluation; real sandbox and remote workflow validation remain pending. ParallelBench candidate integration requires a versioned upstream boundary.
 4. Later research: hardware feedback, iterative search, reproducible cross-model studies.

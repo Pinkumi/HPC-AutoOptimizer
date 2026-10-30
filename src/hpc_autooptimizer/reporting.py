@@ -1,4 +1,4 @@
-"""Readable Phase 2 reports; inference timings never imply program performance."""
+"""Readable optimization and evaluation reports with explicit validation scope."""
 import math
 
 
@@ -80,4 +80,43 @@ def format_optimization_summary(record: dict, proposal: dict | None = None) -> s
         lines.append(f"- {label}: {details[label]}")
     if record.get("error"):
         lines += ["", "## Generation error", "", _quoted(str(record["error"]))]
+    return "\n".join(lines) + "\n"
+
+
+def format_evaluation_report(record: dict, directory: object = None) -> str:
+    benchmark = record["benchmark"]
+    lines = [f"Evaluation ID: {record['experiment_id']}",
+             f"Backend: {record['execution_backend']} ({record['isolation_mode']})",
+             f"Syntax: {record['syntax_status']}", f"Correctness: {record['correctness']['status']}",
+             f"Failed cases: {record['correctness'].get('failed_cases', [])}",
+             f"CPU benchmark: {benchmark['status']}",
+             f"Speedup (baseline median / candidate median): {_metric(benchmark.get('speedup'), 'x')}",
+             f"Decision: {record['decision']}"]
+    if record.get("error"):
+        lines.append(f"Error: {_text(record['error'])}")
+    if directory is not None:
+        lines.append(f"Results: {directory}")
+    if record["isolation_mode"] == "trusted_development_only":
+        lines.append("TRUSTED FIXTURES ONLY: no filesystem or network isolation; never use this mode for LLM output.")
+    lines.append("Case agreement is limited to the contract; measured timings do not establish statistical significance.")
+    return "\n".join(lines)
+
+
+def format_evaluation_summary(record: dict) -> str:
+    lines = ["# Evaluation experiment", "", f"Timestamp: {record['timestamp']}", "",
+             f"Original source: {record['original_source_path']}", "",
+             f"Candidate source: {record['candidate_source_path']}", "",
+             "## Results", "", "```text", format_evaluation_report(record), "```", "",
+             "## CPU measurements", ""]
+    for label in ("baseline", "candidate"):
+        statistics = record["benchmark"].get(label)
+        if statistics:
+            lines.append(f"- {label}: median {_metric(statistics['median_ns'], ' ns')}, "
+                         f"mean {_metric(statistics['mean_ns'], ' ns')}, "
+                         f"standard deviation {_metric(statistics['standard_deviation_ns'], ' ns')}; "
+                         f"{len(statistics['samples_ns'])} samples")
+    if record["benchmark"]["status"] == "not_run":
+        lines.append("Not evaluated: correctness must pass before any workload timing.")
+    lines += ["", "Full contract, hashes, case diagnostics, limits, and timing samples are in record.json.",
+              "The original optimization experiment has not been modified."]
     return "\n".join(lines) + "\n"

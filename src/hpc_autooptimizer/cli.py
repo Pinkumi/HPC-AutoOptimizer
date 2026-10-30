@@ -9,7 +9,7 @@ from .history import ExperimentHistory
 from .llm_benchmark import run_llm_benchmark
 from .models import validate_python
 from .providers import MockLLMProvider, OllamaLLMProvider, ProviderError
-from .reporting import format_cli_summary
+from .reporting import format_cli_summary, format_evaluation_report
 
 
 def _settings_arguments(parser: argparse.ArgumentParser) -> None:
@@ -21,7 +21,7 @@ def _settings_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate optimization proposals without executing source code")
+    parser = argparse.ArgumentParser(description="Propose optimizations or explicitly evaluate Python functions offline")
     commands = parser.add_subparsers(dest="command", required=True)
     optimize = commands.add_parser("optimize", help="Propose a Python source optimization")
     optimize.add_argument("source", type=Path)
@@ -35,12 +35,33 @@ def main(argv: list[str] | None = None) -> int:
     benchmark.add_argument("--runs", type=int, default=5)
     benchmark.add_argument("--warmup", action="store_true")
     _settings_arguments(benchmark)
+    evaluate = commands.add_parser("evaluate", help="Explicit offline correctness and CPU evaluation")
+    evaluate.add_argument("--original", type=Path, required=True)
+    evaluate.add_argument("--candidate", type=Path, required=True)
+    evaluate.add_argument("--spec", type=Path, required=True, help="JSON evaluation contract")
+    evaluate.add_argument("--backend", choices=("auto", "bubblewrap", "trusted"), default="auto")
+    evaluate.add_argument("--trusted-fixtures", action="store_true",
+                          help="Explicitly trust both files for host execution; NOT a security sandbox")
+    evaluate.add_argument("--history-dir", default="experiments")
     arguments = list(sys.argv[1:] if argv is None else argv)
     # Preserve the Phase 1 positional-source command.
-    if arguments and not arguments[0].startswith("-") and arguments[0] not in {"optimize", "llm-benchmark"}:
+    if arguments and not arguments[0].startswith("-") and arguments[0] not in {"optimize", "llm-benchmark", "evaluate"}:
         arguments.insert(0, "optimize")
     args = parser.parse_args(arguments)
     try:
+        if args.command == "evaluate":
+            from .evaluation import LocalEvaluator
+            from .evaluation_spec import EvaluationSpec
+            from .execution import ExecutionBackend
+            for path in (args.original, args.candidate, args.spec):
+                if not path.is_file():
+                    raise ValueError(f"Input file does not exist: {path}")
+            spec = EvaluationSpec.load(args.spec)
+            backend = ExecutionBackend(args.backend, trusted_fixtures=args.trusted_fixtures)
+            directory, record = LocalEvaluator(backend, ExperimentHistory(args.history_dir)).evaluate(
+                args.original, args.candidate, spec)
+            print(format_evaluation_report(record, directory))
+            return 1 if record["decision"] == "evaluation_error" else 2 if record["decision"].startswith("rejected_") else 0
         env_file = args.env_file if args.env_file is not None else (Path(".env") if Path(".env").is_file() else None)
         config = ExperimentConfig.load(args.config, env_file, provider=args.provider, model=args.model,
                                        history_dir=args.history_dir)
